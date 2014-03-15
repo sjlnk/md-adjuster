@@ -2,9 +2,10 @@ import csv
 import re
 import argparse
 import logging
-import urllib
+import urllib.request
 import sys
 import numpy as np
+import bottleneck as bn
 from datetime import datetime, timedelta
 
 def bytes_to_str(b):
@@ -62,7 +63,7 @@ def analyze_datafile(file, sensitivity = 1e-1):
             if len(floats) != len(median_diffs):
                 logging.error("Line {} in file {} is exceptional, skipped.".format(lineno, file))
                 continue
-            fmedian = np.median(floats)
+            fmedian = bn.median(floats)
             # logging.debug("[{}] median: {}".format(lineno, fmedian))
             for i in range(0, len(floats)):
                 diffnow = (floats[i] - fmedian) / fmedian
@@ -234,74 +235,132 @@ def construct_ds_multipliers(yahoodata):
 
     return dsadj
 
-def adjust_price_columns(datafile, yahoodata, pricecols, ofile, dtformat, numdecimals, mode = "all"):
+def adjust_price_columns(datafile, dsmult, pricecols, ofile, dtformat, numdecimals, mode):
 
-    divsplitadj = []
     datarows = []
     datadates = []
-
-    with open(divsplits, 'r') as csvfile:
-        reader = csv.reader(csvfile)
-        for row in reader:
-            dt = datetime.strptime(row[1], "%Y%m%d")
-            divsplitadj.append(DivSplitAdjustment(row[0], dt, float(row[2]), float(row[3]), float(row[4])))
-
 
     with open(datafile, 'r') as csvfile:
         reader = csv.reader(csvfile)
         for row in reader:
             datarows.append(row)
-            # TODO: try to figure dateformat automatically and alternatively get it as a commandline argument
             dt = datetime.strptime(row[0], dtformat)
             datadates.append(dt)
 
-    for row in datarows:
-        for i in pricecols:
-            row[i] = float(row[i])
+    if datadates[-1] > datadates[0]:
+        ascending = True
+    else:
+        ascending = False
 
-    datarows.reverse()
-    datadates.reverse()
+    if ascending:
+        datarows.reverse()
+        datadates.reverse()
 
-    nextdsidx = -1
+    startdsidx = -1
 
-    for i in range(len(divsplitadj)):
-        if divsplitadj[i].date < datadates[0]:
-            nextdsidx = i
+    for i in range(len(dsmult)):
+        if dsmult[i].date < datadates[0]:
+            startdsidx = i
             break
 
-    if nextdsidx == -1:
-        print("Data ranges don't match, adjustments not neccessary!")
+    if startdsidx == -1:
+        print("Data ranges don't match, adjustments not necessary!")
         sys.exit(0)
 
-    totdivs = 0
+    nextdsidx = startdsidx
+
+    totdivs = 1
     totsplits = 1
 
     for i in range(len(datarows)):
 
         dt = datadates[i]
-        ds = divsplitadj[nextdsidx]
 
-        if dt < ds.date:
-            if ds.type == "DIVIDEND":
-                totdivs += ds.adj
-            elif ds.type == "SPLIT":
-                totsplits *= ds.adj
-            nextdsidx += 1
+        if nextdsidx < len(dsmult):
+            ds = dsmult[nextdsidx]
+
+            if dt < ds.date:
+                if ds.type == "DIVIDEND":
+                    totdivs *= ds.adj
+                elif ds.type == "SPLIT":
+                    totsplits *= ds.adj
+                nextdsidx += 1
 
         for i2 in pricecols:
-            if mode == "all" or mode == "divsonly":
-                datarows[i][i2] -= totdivs
-            if mode == "all" or mode == "splitsonly":
+            datarows[i][i2] = float(datarows[i][i2])
+            if mode == "all" or mode == "divs_only":
+                datarows[i][i2] *= totdivs
+            if mode == "all" or mode == "splits_only":
                 datarows[i][i2] *= totsplits
             datarows[i][i2] = round(datarows[i][i2], numdecimals)
 
-    datarows.reverse()
+    if ascending:
+        datarows.reverse()
+        datadates.reverse()
+
     with open(ofile, 'w') as fout:
         for row in datarows:
             s = ""
             for i in range(len(row)):
                 s += "{},".format(row[i])
             fout.write("{}\n".format(s[:-1]))
+
+    # with open(divsplits, 'r') as csvfile:
+    #     reader = csv.reader(csvfile)
+    #     for row in reader:
+    #         dt = datetime.strptime(row[1], "%Y%m%d")
+    #         divsplitadj.append(DivSplitAdjustment(row[0], dt, float(row[2]), float(row[3]), float(row[4])))
+    #
+    #
+
+    #
+    # for row in datarows:
+    #     for i in pricecols:
+    #         row[i] = float(row[i])
+    #
+    # datarows.reverse()
+    # datadates.reverse()
+    #
+    # nextdsidx = -1
+    #
+    # for i in range(len(divsplitadj)):
+    #     if divsplitadj[i].date < datadates[0]:
+    #         nextdsidx = i
+    #         break
+    #
+    # if nextdsidx == -1:
+    #     print("Data ranges don't match, adjustments not neccessary!")
+    #     sys.exit(0)
+    #
+    # totdivs = 0
+    # totsplits = 1
+    #
+    # for i in range(len(datarows)):
+    #
+    #     dt = datadates[i]
+    #     ds = divsplitadj[nextdsidx]
+    #
+    #     if dt < ds.date:
+    #         if ds.type == "DIVIDEND":
+    #             totdivs += ds.adj
+    #         elif ds.type == "SPLIT":
+    #             totsplits *= ds.adj
+    #         nextdsidx += 1
+    #
+    #     for i2 in pricecols:
+    #         if mode == "all" or mode == "divs_only":
+    #             datarows[i][i2] -= totdivs
+    #         if mode == "all" or mode == "splits_only":
+    #             datarows[i][i2] *= totsplits
+    #         datarows[i][i2] = round(datarows[i][i2], numdecimals)
+    #
+    # datarows.reverse()
+    # with open(ofile, 'w') as fout:
+    #     for row in datarows:
+    #         s = ""
+    #         for i in range(len(row)):
+    #             s += "{},".format(row[i])
+    #         fout.write("{}\n".format(s[:-1]))
 
 if __name__ == "__main__":
 
@@ -312,7 +371,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", help="Yahoo Finance symbol")
     parser.add_argument("-f", help="Datetime format for the data file")
     parser.add_argument("-d", type=int, help="Number of decimals")
-    # parser.add_argument("-m", choices=["all", "divsonly", "splitsonly"], help="Adjustment mode")
+    parser.add_argument("-m", choices=["all", "divs_only", "splits_only"], help="Adjustment mode")
     parser.add_argument("-o", help="output filename")
     parser.add_argument("-v", action="store_true", help="verbose mode")
 
@@ -370,7 +429,7 @@ if __name__ == "__main__":
 
     logging.info("Doing the necessary adjustments and saving to {}".format(ofile))
 
-    # adjust_price_columns(args.datafile, yahoodata, pricecols, ofile, dtformat, numdecimals, args.m)
+    adjust_price_columns(args.datafile, dsmult, pricecols, ofile, dtformat, numdecimals, args.m)
 
     logging.info("Output saved to {}".format(ofile))
 
