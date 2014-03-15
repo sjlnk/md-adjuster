@@ -1,4 +1,6 @@
 import csv
+import os.path
+import shutil
 import re
 import argparse
 import logging
@@ -34,7 +36,7 @@ class DivSplitAdjustment:
     def __repr__(self):
         return "{}: {} adj={}".format(self.date, self.type, self.adj)
 
-def analyze_datafile(file, sensitivity = 1e-1):
+def analyze_datafile(file, sensitivity=1e-1):
 
     with open(file, 'r') as csvfile:
         reader = csv.reader(csvfile)
@@ -70,6 +72,10 @@ def analyze_datafile(file, sensitivity = 1e-1):
                 median_diffs[i].append(diffnow)
                 # logging.debug("[{}][{}] diff: {}".format(lineno, i, diffnow))
             lineno += 1
+
+            # we don't need more data than this (faster runtime)
+            if lineno == 10001:
+                break
 
     mean_median_diffs = np.abs(np.mean(median_diffs, axis=1))
     logging.debug("Mean median diffs: {}".format(mean_median_diffs))
@@ -117,8 +123,8 @@ def get_dt_format(file):
         except ValueError:
             pass
 
-    print("Datetime format cannot be guessed.")
-    sys.exit(2)
+    logging.error("Datetime format cannot be guessed.")
+    return None
 
 def analyze_dates(datafile, dtformat):
 
@@ -145,12 +151,12 @@ def analyze_dates(datafile, dtformat):
     for i in range(1, len(dates)):
         if ascending:
             if dates[i] <= dates[i-1]:
-                logging.fatal("Chronological order of data is inconsistent.")
-                sys.exit(2)
+                logging.error("Chronological order of data is inconsistent at line {}.".format(i))
+                return None, None, None
         else:
             if dates[i] >= dates[i-1]:
-                logging.fatal("Chronological order of data is inconsistent.")
-                sys.exit(2)
+                logging.error("Chronological order of data is inconsistent at line {}.".format(i))
+                return None, None, None
 
     return min(dates), max(dates), ascending
 
@@ -264,8 +270,8 @@ def adjust_price_columns(datafile, dsmult, pricecols, ofile, dtformat, numdecima
             break
 
     if startdsidx == -1:
-        print("Data ranges don't match, adjustments not necessary!")
-        sys.exit(0)
+        logging.error("Data ranges don't match, adjustments not necessary!")
+        return False
 
     nextdsidx = startdsidx
 
@@ -305,70 +311,18 @@ def adjust_price_columns(datafile, dsmult, pricecols, ofile, dtformat, numdecima
                 s += "{},".format(row[i])
             fout.write("{}\n".format(s[:-1]))
 
-    # with open(divsplits, 'r') as csvfile:
-    #     reader = csv.reader(csvfile)
-    #     for row in reader:
-    #         dt = datetime.strptime(row[1], "%Y%m%d")
-    #         divsplitadj.append(DivSplitAdjustment(row[0], dt, float(row[2]), float(row[3]), float(row[4])))
-    #
-    #
+    return True
 
-    #
-    # for row in datarows:
-    #     for i in pricecols:
-    #         row[i] = float(row[i])
-    #
-    # datarows.reverse()
-    # datadates.reverse()
-    #
-    # nextdsidx = -1
-    #
-    # for i in range(len(divsplitadj)):
-    #     if divsplitadj[i].date < datadates[0]:
-    #         nextdsidx = i
-    #         break
-    #
-    # if nextdsidx == -1:
-    #     print("Data ranges don't match, adjustments not neccessary!")
-    #     sys.exit(0)
-    #
-    # totdivs = 0
-    # totsplits = 1
-    #
-    # for i in range(len(datarows)):
-    #
-    #     dt = datadates[i]
-    #     ds = divsplitadj[nextdsidx]
-    #
-    #     if dt < ds.date:
-    #         if ds.type == "DIVIDEND":
-    #             totdivs += ds.adj
-    #         elif ds.type == "SPLIT":
-    #             totsplits *= ds.adj
-    #         nextdsidx += 1
-    #
-    #     for i2 in pricecols:
-    #         if mode == "all" or mode == "divs_only":
-    #             datarows[i][i2] -= totdivs
-    #         if mode == "all" or mode == "splits_only":
-    #             datarows[i][i2] *= totsplits
-    #         datarows[i][i2] = round(datarows[i][i2], numdecimals)
-    #
-    # datarows.reverse()
-    # with open(ofile, 'w') as fout:
-    #     for row in datarows:
-    #         s = ""
-    #         for i in range(len(row)):
-    #             s += "{},".format(row[i])
-    #         fout.write("{}\n".format(s[:-1]))
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Adjusts historical data for splits/dividends")
 
-    parser.add_argument("datafile", help="Historical data")
+    parser.add_argument("datafiles", nargs='*', help="Historical data")
 
+    parser.add_argument("-c", nargs='*', type=int, help="columns to be adjusted")
     parser.add_argument("-s", help="Yahoo Finance symbol")
+    parser.add_argument("--sensitivity", type=float, default=1e-1, help="sensitivity setting for automatic column detection")
     parser.add_argument("-f", help="Datetime format for the data file")
     parser.add_argument("-d", type=int, help="Number of decimals")
     parser.add_argument("-m", choices=["all", "divs_only", "splits_only"], help="Adjustment mode")
@@ -378,58 +332,78 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.v:
-        logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%j-%H:%M:%S')
+        logging.basicConfig(handlers=[logging.StreamHandler(sys.stdout)], level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%j-%H:%M:%S')
     else:
-        logging.basicConfig(handlers=[logging.StreamHandler()], level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%j-%H:%M:%S')
+        logging.basicConfig(handlers=[logging.StreamHandler(sys.stdout)], level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%j-%H:%M:%S')
 
-    # first analyze where are the price fields (look for floats of similar amplitude)
+    for datafile in args.datafiles:
 
-    logging.info("Finding price columns from file {}...".format(args.datafile))
 
-    pricecols, numdecimals = analyze_datafile(args.datafile)
+        # first analyze where are the price fields (look for floats of similar amplitude)
 
-    if args.d:
-        numdecimals = args.n
+        logging.info("Finding price columns from file {}...".format(datafile))
 
-    logging.info("Price columns found: {}".format(pricecols))
-    logging.info("Number of decimals: {}".format(numdecimals))
+        pricecols, numdecimals = analyze_datafile(datafile, args.sensitivity)
 
-    if args.o:
-        ofile = args.o
-    else:
-        ofile = "{}_adjusted.csv".format(args.datafile[:-4])
+        if args.d:
+            numdecimals = args.n
 
-    if args.f:
-        dtformat = args.f
-    else:
-        dtformat = get_dt_format(args.datafile)
-        logging.info("Datetime format found: {}".format(dtformat))
-
-    if args.s:
-        yahoosymbol = args.s
-    else:
-        m = re.search(".*?[-./_]", args.datafile)
-        if m:
-            yahoosymbol = m.group(0)[:-1]
+        if args.c:
+            pricecols = args.c
+            logging.info("Using price columns: {}".format(pricecols))
         else:
-            logging.fatal("Cannot guess Yahoo Finance symbol based on datafile")
-            sys.exit(2)
+            logging.info("Price columns found: {}".format(pricecols))
 
-    mindt, maxdt, ascending = analyze_dates(args.datafile, dtformat)
+        logging.info("Number of decimals: {}".format(numdecimals))
 
-    # we need one more day of data to accurately construct div/split data
-    enddate = maxdt.date() + timedelta(days=1)
+        if args.o and len(args.datafiles) == 1:  # only supported with single file
+            ofile = args.o
+        else:
+            fn = os.path.basename(datafile)
+            ofile = "{}_adjusted.csv".format(fn[:-4])
 
-    yahoodata = download_yahoo_data(yahoosymbol, mindt.date(), enddate, "d", "x")
-    logging.info("Downloaded {} of Yahoo historical data.".format(bytes_to_str(len(yahoodata))))
+        if args.f:
+            dtformat = args.f
+        else:
+            dtformat = get_dt_format(datafile)
+            if not dtformat:
+                continue
+            logging.info("Datetime format found: {}".format(dtformat))
 
-    logging.info("Compiling dividend/split multipliers based on Yahoo data...")
+        if args.s and len(args.datafiles) == 1:  # only supported with single file
+            yahoosymbol = args.s
+        else:
+            fn = os.path.basename(datafile)
+            m = re.search(".*?[-._]", fn)
+            if m:
+                yahoosymbol = m.group(0)[:-1]
+            else:
+                logging.error("Cannot guess Yahoo Finance symbol based on datafile")
+                continue
 
-    dsmult = construct_ds_multipliers(yahoodata)
+        mindt, maxdt, ascending = analyze_dates(datafile, dtformat)
 
-    logging.info("Doing the necessary adjustments and saving to {}".format(ofile))
+        if not mindt:  # in case of error
+            continue
 
-    adjust_price_columns(args.datafile, dsmult, pricecols, ofile, dtformat, numdecimals, args.m)
+        # we need one more day of data to accurately construct div/split data
+        enddate = maxdt.date() + timedelta(days=1)
 
-    logging.info("Output saved to {}".format(ofile))
+        yahoodata = download_yahoo_data(yahoosymbol, mindt.date(), enddate, "d", "x")
+        logging.info("Downloaded {} of Yahoo historical data.".format(bytes_to_str(len(yahoodata))))
+
+        logging.info("Compiling dividend/split multipliers based on Yahoo data...")
+
+        dsmult = construct_ds_multipliers(yahoodata)
+
+        if not dsmult:
+            logging.info("No dividends/splits, no adjustments necessary.")
+            shutil.copy(datafile, ofile)  # no adjustments needed, just copy file as it is
+        else:
+            logging.info("Doing the necessary adjustments...".format(ofile))
+            res = adjust_price_columns(datafile, dsmult, pricecols, ofile, dtformat, numdecimals, args.m)
+            if not res:
+                continue
+
+        logging.info("Output saved to {}".format(ofile))
 
